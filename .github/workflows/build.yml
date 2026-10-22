@@ -1,0 +1,153 @@
+# SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Builds the CapyPS5 Android APK (arm64-v8a) on GitHub Actions.
+#
+# Pipeline (mirrors tools/build_android.ps1):
+#   1. CMake + Ninja + NDK 28.2.13676358 build of libcapyps5.so (target `capyps5`,
+#      which also builds the libadrenotools hook libraries).
+#   2. llvm-strip --strip-debug into android/app/src/main/jniLibs/arm64-v8a
+#      (same as the developer script, so Gradle packages the same layout).
+#   3. Gradle assembleDebug (signed with the auto-generated debug key) and
+#      assembleRelease signed with a throwaway keystore generated in CI, so both
+#      APKs are directly installable. Releases of the fork can sign with their
+#      own key instead; the CI keystore is only for convenience.
+#
+# Triggers: push to main and fix/**, pull_request, and manual workflow_dispatch.
+
+name: build-apk
+
+on:
+  push:
+    branches:
+      - main
+      - 'fix/**'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Free disk space (the native build produces ~10 GB of objects)
+        run: |
+          sudo rm -rf /opt/hostedtoolcache/CodeQL /usr/share/dotnet /opt/ghc \
+            /usr/local/lib/android/sdk/ndk-bundle || true
+          sudo docker image prune -af > /dev/null 2>&1 || true
+          df -h /
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install native build prerequisites
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq ninja-build glslang-tools ccache
+          glslangValidator --version | head -1
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android NDK and SDK components
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" --install "ndk;28.2.13676358" "platforms;android-35" "build-tools;35.0.0" > /dev/null
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-android-arm64-${{ github.sha }}
+          restore-keys: |
+            ccache-android-arm64-
+
+      - name: Configure native build
+        run: |
+          cmake -S core -B build-android-arm64 -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/28.2.13676358/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-31 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DKYTY_BUILD_LAUNCHER=OFF \
+            -DKYTY_BUILD_ORIGIN=Fork \
+            -DKYTY_BUILD_REPOSITORY="$GITHUB_REPOSITORY"
+
+      - name: Build libcapyps5.so
+        run: |
+          ccache --show-config | grep max_size || true
+          ninja -C build-android-arm64 capyps5
+          ccache --show-stats | tail -5 || true
+
+      - name: Stage native libraries for packaging
+        run: |
+          NDK="$ANDROID_HOME/ndk/28.2.13676358"
+          STRIP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          JNI="android/app/src/main/jniLibs/arm64-v8a"
+          mkdir -p "$JNI"
+          "$STRIP" --strip-debug -o "$JNI/libcapyps5.so" build-android-arm64/libcapyps5.so
+          cp "$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "$JNI/"
+          for hook in main_hook file_redirect_hook gsl_alloc_hook hook_impl; do
+            lib="$(find build-android-arm64 -name "lib$hook.so" | head -n 1)"
+            test -n "$lib" || { echo "missing lib$hook.so"; exit 1; }
+            "$STRIP" --strip-debug -o "$JNI/lib$hook.so" "$lib"
+          done
+          ls -la "$JNI"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APK (auto-signed with the CI debug key)
+        run: |
+          chmod +x android/gradlew
+          (cd android && ./gradlew --no-daemon assembleDebug)
+          ls -la android/app/build/outputs/apk/debug/
+
+      - name: Build release APK and sign with a CI-generated keystore
+        env:
+          CAPY_KS_PASS: CapyPS5-CI-Keystore-2026
+        run: |
+          keytool -genkeypair -v \
+            -keystore capy-ci.jks -alias capy \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass "$CAPY_KS_PASS" -keypass "$CAPY_KS_PASS" \
+            -dname "CN=CapyPS5 CI, OU=CI, O=deivid22srk, L=Internet, S=Internet, C=BR"
+          (cd android && ./gradlew --no-daemon assembleRelease)
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          "$BT/zipalign" -f -p 4 \
+            android/app/build/outputs/apk/release/app-release-unsigned.apk \
+            android/CapyPS5-aligned.apk
+          "$BT/apksigner" sign \
+            --ks capy-ci.jks --ks-key-alias capy \
+            --ks-pass env:CAPY_KS_PASS --key-pass env:CAPY_KS_PASS \
+            --out android/CapyPS5-${{ github.sha }}-release.apk \
+            android/CapyPS5-aligned.apk
+          "$BT/apksigner" verify --print-certs android/CapyPS5-${{ github.sha }}-release.apk
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: CapyPS5-debug-${{ github.sha }}
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: CapyPS5-release-${{ github.sha }}
+          path: android/CapyPS5-${{ github.sha }}-release.apk
+          if-no-files-found: error
+
+      - name: Attach APKs to a GitHub Release (on tags)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: android/CapyPS5-${{ github.sha }}-release.apk
