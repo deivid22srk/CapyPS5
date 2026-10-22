@@ -105,7 +105,11 @@ jobs:
           done
           ls -la "$JNI"
 
+      # validate-wrappers: false — the vendored SDL3 sample project ships its own
+      # gradle-wrapper.jar (never executed here) whose checksum is not on Gradle's list.
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          validate-wrappers: false
 
       - name: Build debug APK (auto-signed with the CI debug key)
         run: |
