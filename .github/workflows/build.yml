@@ -71,6 +71,7 @@ jobs:
           restore-keys: |
             ccache-android-arm64-
 
+      # BUILD_TESTING=OFF: vendored FEX pulls in Catch2 and its unit tests otherwise.
       - name: Configure native build
         run: |
           cmake -S core -B build-android-arm64 -G Ninja \
@@ -79,6 +80,7 @@ jobs:
             -DANDROID_PLATFORM=android-31 \
             -DCMAKE_BUILD_TYPE=Release \
             -DKYTY_BUILD_LAUNCHER=OFF \
+            -DBUILD_TESTING=OFF \
             -DKYTY_BUILD_ORIGIN=Fork \
             -DKYTY_BUILD_REPOSITORY="$GITHUB_REPOSITORY"
 
