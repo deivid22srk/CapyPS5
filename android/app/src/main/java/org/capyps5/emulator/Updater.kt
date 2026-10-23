@@ -21,17 +21,16 @@ data class Release(val tag: String, val name: String, val notes: String, val apk
 
 /**
  * Checks the project's releases for a newer APK, downloads it and hands it to the system installer.
- * The project's own Forgejo is asked first and the GitHub mirror when it does not answer.
+ * CapyPS5 X only asks its own GitHub releases, so every update keeps the same signing key.
  */
 object Updater {
     private const val TAG = "CapyPS5-Updater"
     private val SOURCES = listOf(
-        "https://git.capyps5.org/api/v1/repos/CapyPS5/CapyPS5/releases?limit=20",
-        "https://api.github.com/repos/Ghael-V/CapyPS5/releases?per_page=20",
+        "https://api.github.com/repos/deivid22srk/CapyPS5/releases?per_page=20",
     )
 
     /** What the launcher and the pause menu show, from the APK's own version name. */
-    fun versionText(context: Context): String = "CapyPS5 v${installedVersion(context)} Alpha (ARM64 Android)"
+    fun versionText(context: Context): String = "CapyPS5 X v${installedVersion(context)} (ARM64 Android)"
 
     fun installedVersion(context: Context): String =
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "0"
@@ -100,7 +99,7 @@ object Updater {
     }
 
     private fun apkFile(context: Context, release: Release): File =
-        File(File(context.cacheDir, "updates").apply { mkdirs() }, "CapyPS5-${release.tag}.apk")
+        File(File(context.cacheDir, "updates").apply { mkdirs() }, "CapyPS5-X-${release.tag}.apk")
 
     /** Downloads the release's APK, reporting progress from 0 to 1; returns the file or null. */
     suspend fun download(context: Context, release: Release, onProgress: (Float) -> Unit): File? =

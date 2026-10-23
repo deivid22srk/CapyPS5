@@ -276,6 +276,7 @@ private fun TopBar(tab: Int, onTab: (Int) -> Unit, onAdd: () -> Unit, onRefresh:
             buildAnnotatedString {
                 withStyle(SpanStyle(color = Capy.TextPrimary)) { append("Capy") }
                 withStyle(SpanStyle(color = Capy.Accent)) { append("PS5") }
+                withStyle(SpanStyle(color = Capy.TextPrimary)) { append(" X") }
             },
             style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
             modifier = Modifier.padding(start = 8.dp, end = 30.dp),

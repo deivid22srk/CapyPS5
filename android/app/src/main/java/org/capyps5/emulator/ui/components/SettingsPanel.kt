@@ -153,7 +153,7 @@ fun SettingsPanel(
                         .padding(vertical = 8.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(stringResource(R.string.folder_add_a), style = MaterialTheme.typography.labelLarge, color = Color.White)
+                    Text(stringResource(R.string.folder_add_a), style = MaterialTheme.typography.labelLarge, color = Capy.OnAccent)
                 }
             }
         }
@@ -205,7 +205,7 @@ private fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> U
                 Text(
                     label,
                     style = MaterialTheme.typography.labelLarge,
-                    color = if (i == selected) Color.White else Capy.TextSecondary,
+                    color = if (i == selected) Capy.OnAccent else Capy.TextSecondary,
                 )
             }
         }

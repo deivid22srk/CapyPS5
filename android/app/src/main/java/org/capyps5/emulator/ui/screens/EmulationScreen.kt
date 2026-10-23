@@ -490,7 +490,7 @@ private fun ErrorCard(message: String, onExit: () -> Unit) {
             Text(
                 stringResource(R.string.back_to_home_a),
                 style = MaterialTheme.typography.labelLarge,
-                color = Color.White,
+                color = Capy.OnAccent,
                 modifier = Modifier
                     .background(Capy.Accent, RoundedCornerShape(50))
                     .clickable(onClick = onExit)

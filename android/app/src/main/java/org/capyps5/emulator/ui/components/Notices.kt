@@ -102,8 +102,8 @@ fun NoticeDialog(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
                 ) {
-                    action.icon?.let { Icon(it, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp)) }
-                    Text(action.label, style = MaterialTheme.typography.labelLarge, color = Color.White)
+                    action.icon?.let { Icon(it, contentDescription = null, tint = Capy.OnAccent, modifier = Modifier.size(18.dp)) }
+                    Text(action.label, style = MaterialTheme.typography.labelLarge, color = Capy.OnAccent)
                 }
             }
             if (stacked) {

@@ -147,7 +147,7 @@
     <string name="update_retry">Reintentar</string>
     <string name="update_downloading">Descargando… %1$d %%</string>
     <string name="update_failed">La descarga ha fallado. Comprueba tu conexión e inténtalo de nuevo.</string>
-    <string name="update_permission">Permite a CapyPS5 instalar aplicaciones en la pantalla que se acaba de abrir y vuelve a pulsar Instalar.</string>
+    <string name="update_permission">Permite a CapyPS5 X instalar aplicaciones en la pantalla que se acaba de abrir y vuelve a pulsar Instalar.</string>
 
     <!-- Apoyo -->
     <string name="support_title">¿Te gusta CapyPS5?</string>

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project
 # SPDX-License-Identifier: GPL-2.0-only
 #
-# Builds the CapyPS5 Android APK (arm64-v8a) on GitHub Actions.
+# Builds the CapyPS5 X Android APK (arm64-v8a) on GitHub Actions.
 #
 # Pipeline (mirrors tools/build_android.ps1):
 #   1. CMake + Ninja + NDK 28.2.13676358 build of libcapyps5.so (target `capyps5`,
@@ -9,11 +9,17 @@
 #   2. llvm-strip --strip-debug into android/app/src/main/jniLibs/arm64-v8a
 #      (same as the developer script, so Gradle packages the same layout).
 #   3. Gradle assembleDebug (signed with the auto-generated debug key) and
-#      assembleRelease signed with a throwaway keystore generated in CI, so both
-#      APKs are directly installable. Releases of the fork can sign with their
-#      own key instead; the CI keystore is only for convenience.
+#      assembleRelease signed with the FIXED CapyPS5 X release keystore stored in
+#      the repo secrets (CAPY_RELEASE_KEYSTORE_B64 / CAPY_RELEASE_KEYSTORE_PASS /
+#      CAPY_RELEASE_KEY_ALIAS / CAPY_RELEASE_KEY_PASS), so every release keeps the
+#      same signature and installs as an update over the previous one. When the
+#      secrets are absent (PRs, forks), a throwaway CI key is used instead.
 #
-# Triggers: push to main and fix/**, pull_request, and manual workflow_dispatch.
+# Releases are published ONLY from v* tags: pushing a tag builds the exact tag
+# commit and attaches the signed APK to the GitHub Release. Never tag unless a
+# release was explicitly requested.
+#
+# Triggers: push to main / fix/** / v* tags, pull_request, and manual workflow_dispatch.
 
 name: build-apk
 
@@ -22,6 +28,8 @@ on:
     branches:
       - main
       - 'fix/**'
+    tags:
+      - 'v*'
   pull_request:
   workflow_dispatch:
 
@@ -117,43 +125,66 @@ jobs:
           (cd android && ./gradlew --no-daemon assembleDebug)
           ls -la android/app/build/outputs/apk/debug/
 
-      - name: Build release APK and sign with a CI-generated keystore
+      - name: Build release APK and sign with the fixed CapyPS5 X key
         env:
-          CAPY_KS_PASS: CapyPS5-CI-Keystore-2026
+          CAPY_KS_B64: ${{ secrets.CAPY_RELEASE_KEYSTORE_B64 }}
+          CAPY_KS_PASS: ${{ secrets.CAPY_RELEASE_KEYSTORE_PASS }}
+          CAPY_KS_ALIAS: ${{ secrets.CAPY_RELEASE_KEY_ALIAS }}
+          CAPY_KEY_PASS: ${{ secrets.CAPY_RELEASE_KEY_PASS }}
+          CAPY_FALLBACK_PASS: CapyPS5-CI-Keystore-2026
         run: |
-          keytool -genkeypair -v \
-            -keystore capy-ci.jks -alias capy \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass "$CAPY_KS_PASS" -keypass "$CAPY_KS_PASS" \
-            -dname "CN=CapyPS5 CI, OU=CI, O=deivid22srk, L=Internet, S=Internet, C=BR"
+          chmod +x android/gradlew
           (cd android && ./gradlew --no-daemon assembleRelease)
           BT="$ANDROID_HOME/build-tools/35.0.0"
           "$BT/zipalign" -f -p 4 \
             android/app/build/outputs/apk/release/app-release-unsigned.apk \
             android/CapyPS5-aligned.apk
-          "$BT/apksigner" sign \
-            --ks capy-ci.jks --ks-key-alias capy \
-            --ks-pass env:CAPY_KS_PASS --key-pass env:CAPY_KS_PASS \
-            --out android/CapyPS5-${{ github.sha }}-release.apk \
-            android/CapyPS5-aligned.apk
-          "$BT/apksigner" verify --print-certs android/CapyPS5-${{ github.sha }}-release.apk
+          if [ -n "$CAPY_KS_B64" ]; then
+            # Fixed release key: every CapyPS5 X build shares one signature, so
+            # updates install over previous versions without uninstalling.
+            echo "$CAPY_KS_B64" | base64 -d > capy-release.jks
+            [ -n "$CAPY_KS_ALIAS" ] || CAPY_KS_ALIAS=capyps5x
+            [ -n "$CAPY_KEY_PASS" ] || CAPY_KEY_PASS="$CAPY_KS_PASS"
+            "$BT/apksigner" sign \
+              --ks capy-release.jks --ks-key-alias "$CAPY_KS_ALIAS" \
+              --ks-pass env:CAPY_KS_PASS --key-pass env:CAPY_KEY_PASS \
+              --out android/CapyPS5-X-${{ github.sha }}-release.apk \
+              android/CapyPS5-aligned.apk
+          else
+            # Fallback for PRs/forks without the secrets: throwaway key.
+            # NOT upgrade-compatible with the fixed release signature.
+            echo "::warning::CAPY_RELEASE_KEYSTORE_B64 is not set; signing with a throwaway key"
+            keytool -genkeypair -v \
+              -keystore capy-ci.jks -alias capy \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$CAPY_FALLBACK_PASS" -keypass "$CAPY_FALLBACK_PASS" \
+              -dname "CN=CapyPS5 CI, OU=CI, O=deivid22srk, L=Internet, S=Internet, C=BR"
+            "$BT/apksigner" sign \
+              --ks capy-ci.jks --ks-key-alias capy \
+              --ks-pass env:CAPY_FALLBACK_PASS --key-pass env:CAPY_FALLBACK_PASS \
+              --out android/CapyPS5-X-${{ github.sha }}-release.apk \
+              android/CapyPS5-aligned.apk
+          fi
+          APK="$(ls android/CapyPS5*-release.apk | head -n 1)"
+          "$BT/apksigner" verify --print-certs "$APK"
+          echo "CAPY_RELEASE_APK=$APK" >> "$GITHUB_ENV"
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: CapyPS5-debug-${{ github.sha }}
+          name: CapyPS5-X-debug-${{ github.sha }}
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
       - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
-          name: CapyPS5-release-${{ github.sha }}
-          path: android/CapyPS5-${{ github.sha }}-release.apk
+          name: CapyPS5-X-release-${{ github.sha }}
+          path: android/CapyPS5-X-*release.apk
           if-no-files-found: error
 
       - name: Attach APKs to a GitHub Release (on tags)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: android/CapyPS5-${{ github.sha }}-release.apk
+          files: android/CapyPS5-X-*release.apk

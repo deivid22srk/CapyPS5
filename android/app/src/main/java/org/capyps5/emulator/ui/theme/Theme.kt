@@ -15,24 +15,25 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 object Capy {
-    val Background = Color(0xFF07090E)
-    val Surface = Color(0xFF11141C)
-    val SurfaceHigh = Color(0xFF1A1F2B)
+    val Background = Color(0xFF0A0805)
+    val Surface = Color(0xFF151009)
+    val SurfaceHigh = Color(0xFF1F1910)
     val Outline = Color(0x22FFFFFF)
-    val Accent = Color(0xFF3D8BFF)
-    val AccentSoft = Color(0x333D8BFF)
+    val Accent = Color(0xFFFF8C33)
+    val AccentSoft = Color(0x33FF8C33)
+    val OnAccent = Color(0xFF221102)
     val TextPrimary = Color(0xFFF1F3F7)
     val TextSecondary = Color(0xFF9AA3B5)
     val TextMuted = Color(0xFF5E6778)
     val Good = Color(0xFF4ADE80)
     val Warn = Color(0xFFFACC15)
     val Bad = Color(0xFFF87171)
-    val Scrim = Color(0xCC07090E)
+    val Scrim = Color(0xCC0A0805)
 }
 
 private val DarkColorScheme = darkColorScheme(
     primary = Capy.Accent,
-    onPrimary = Color.White,
+    onPrimary = Capy.OnAccent,
     secondary = Capy.Accent,
     background = Capy.Background,
     onBackground = Capy.TextPrimary,

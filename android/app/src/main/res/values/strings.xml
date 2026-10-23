@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- English (default). Spanish lives in values-es/strings.xml; keep both in sync. -->
 <resources>
-    <string name="app_name">CapyPS5</string>
+    <string name="app_name">CapyPS5 X</string>
 
     <!-- Common -->
     <string name="settings">Settings</string>
@@ -149,7 +149,7 @@
     <string name="update_retry">Retry</string>
     <string name="update_downloading">Downloading… %1$d %%</string>
     <string name="update_failed">The download failed. Check your connection and try again.</string>
-    <string name="update_permission">Allow CapyPS5 to install apps in the screen that just opened, then press Install.</string>
+    <string name="update_permission">Allow CapyPS5 X to install apps in the screen that just opened, then press Install.</string>
 
     <!-- Support -->
     <string name="support_title">Enjoying CapyPS5?</string>
