@@ -28,6 +28,12 @@ object NativeBridge {
     external fun nativeSetOption(name: String, value: Long)
     /** Vulkan driver for this session; an empty library keeps the system driver. Call before nativeStartGame. */
     external fun nativeSetGpuDriver(nativeLibraryDir: String, driverDir: String, library: String)
+    /**
+     * Points the core log at a live file (one per game, sessions appended after a separator line);
+     * every line is flushed as it is written, so a kill by the system or a crash still leaves the
+     * log behind. An empty path closes it. Call before nativeStartGame.
+     */
+    external fun nativeSetRealtimeLog(path: String)
     external fun nativeSendControllerInput(
         buttons: Int,
         lx: Float,

@@ -125,7 +125,7 @@ fun SettingsScreen(
         )
     }
 
-    val categories = remember(optionsVersion, settings.libraryPaths, message, driverMessage, settings.updateChecks) {
+    val categories = remember(optionsVersion, settings.libraryPaths, message, driverMessage, settings.updateChecks, settings.realtimeLog) {
         listOf(
             SettingsCategory(context.getString(R.string.category_graphics), Icons.Outlined.Image) {
                 val drivers = GpuDrivers.list(context)
@@ -229,6 +229,11 @@ fun SettingsScreen(
                         context.getString(R.string.update_checks), context.getString(R.string.update_checks_desc),
                         context.getString(if (settings.updateChecks) R.string.enabled else R.string.disabled),
                         onStep = { settings.updateUpdateChecks(!settings.updateChecks) },
+                    ),
+                    SettingItem(
+                        context.getString(R.string.realtime_log), context.getString(R.string.realtime_log_desc),
+                        context.getString(if (settings.realtimeLog) R.string.enabled else R.string.disabled),
+                        onStep = { settings.updateRealtimeLog(!settings.realtimeLog) },
                     ),
                     SettingItem(
                         context.getString(R.string.clear_shader_cache), context.getString(R.string.clear_shader_cache_desc),

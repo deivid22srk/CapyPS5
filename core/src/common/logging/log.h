@@ -5,6 +5,7 @@
 #ifndef KYTY_COMMON_LOGGING_LOG_H_
 #define KYTY_COMMON_LOGGING_LOG_H_
 
+#include <filesystem>
 #include <string>
 #include "common/common.h"
 
@@ -36,6 +37,12 @@ void      WriteFatal(fmt::text_style style, std::string_view text);
 // Android: fatal reports are also appended to this file so the frontend can show them after the
 // game process exits.
 void      SetFatalReportPath(std::string path);
+// Android: the frontend can point the core log at a live file (one per game) before the
+// game starts; every line is flushed as it is written, so a kill by the low-memory killer
+// or a crash still leaves the whole story behind. ClearRealtimeFile restores the previous
+// direction.
+void      SetRealtimeFile(std::filesystem::path path);
+void      ClearRealtimeFile();
 void      Flush();
 
 namespace Color {

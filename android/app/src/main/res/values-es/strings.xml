@@ -138,6 +138,8 @@
     <!-- Actualizaciones -->
     <string name="update_checks">Buscar actualizaciones</string>
     <string name="update_checks_desc">Comprueba si hay una versión nueva cada vez que se abre la app</string>
+    <string name="realtime_log">Log en tiempo real</string>
+    <string name="realtime_log_desc">Mientras se ejecuta un juego, su log se escribe en vivo en la carpeta logs de tu carpeta principal, un archivo por juego</string>
     <string name="update_title">Nueva versión disponible</string>
     <string name="update_versions">Ya está disponible %1$s (tienes la %2$s)</string>
     <string name="update_download">Descargar</string>

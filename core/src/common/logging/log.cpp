@@ -9,7 +9,9 @@
 #include "common/debugFlags.h"
 #include "common/emulatorConfig.h"
 
+#include <cstdint>
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <fmt/format.h>
 #include <memory>
@@ -48,14 +50,15 @@ std::shared_ptr<spdlog::logger> MakeLogger(std::string name, spdlog::sink_ptr si
 }
 
 std::shared_ptr<spdlog::logger> MakeFileLogger(std::string                  name,
-                                               const std::filesystem::path& path) {
+                                               const std::filesystem::path& path,
+                                               bool                         truncate) {
 	const auto parent = path.parent_path();
 	if (!parent.empty()) {
 		std::filesystem::create_directories(parent);
 	}
 
 	auto sink =
-	    std::make_shared<spdlog::sinks::basic_file_sink_mt>(path.native(), true);
+	    std::make_shared<spdlog::sinks::basic_file_sink_mt>(path.native(), truncate);
 	return MakeLogger(std::move(name), std::move(sink));
 }
 
@@ -100,6 +103,14 @@ static Direction                       g_direction   = Direction::Console;
 static std::filesystem::path           g_output_file;
 static std::mutex                      g_logger_mutex;
 static std::shared_ptr<spdlog::logger> g_logger;
+// the live per-game log file requested by the Android frontend (see SetRealtimeFile)
+static bool                            g_realtime_file   = false;
+static bool                            g_file_truncate   = true;
+static Direction                       g_saved_direction = Direction::Console;
+static std::filesystem::path           g_saved_output_file;
+// a live log past this size starts over at the next boot, so a chatty game cannot fill
+// the storage without end
+constexpr uint64_t                     kRealtimeLogMaxBytes = 64ull * 1024 * 1024;
 
 void Flush() {
 	if (g_logger != nullptr) {
@@ -107,8 +118,8 @@ void Flush() {
 	}
 }
 
-static void SetupLogger() {
-	std::lock_guard lock(g_logger_mutex);
+// caller holds g_logger_mutex
+static void SetupLoggerLocked() {
 	Flush();
 	g_logger.reset();
 
@@ -121,15 +132,36 @@ static void SetupLogger() {
 			break;
 		case Direction::File:
 			if (!g_output_file.empty()) {
-				g_logger = MakeFileLogger("kyty", g_output_file);
+				g_logger = MakeFileLogger("kyty", g_output_file, g_file_truncate);
 			}
 			break;
 	}
 }
 
+static void SetupLogger() {
+	std::lock_guard lock(g_logger_mutex);
+	SetupLoggerLocked();
+}
+
 static std::shared_ptr<spdlog::logger> GetLogger() {
 	std::lock_guard lock(g_logger_mutex);
 	return g_logger;
+}
+
+// Android fatal reports also reach the live log file, so a DbgExit ends the story in the
+// same file the rest of the session wrote (unused off-Android, where file direction is set
+// by the config and WriteFatal goes through WriteImpl anyway).
+[[maybe_unused]] static void WriteFatalToRealtimeFile(std::string_view text) {
+	if (g_direction != Direction::File) {
+		return;
+	}
+	if (auto logger = GetLogger()) {
+		logger->log(spdlog::level::info, spdlog::string_view_t(text.data(), text.size()));
+		if (text.empty() || text.back() != '\n') {
+			logger->log(spdlog::level::info, spdlog::string_view_t("\n", 1));
+		}
+		logger->flush();
+	}
 }
 
 static void WriteImpl(std::string_view text, fmt::text_style style = {}) {
@@ -161,6 +193,9 @@ static void WriteImpl(std::string_view text, fmt::text_style style = {}) {
 			logger->log(spdlog::level::info, spdlog::string_view_t(styled.data(), styled.size()));
 		} else {
 			logger->log(spdlog::level::info, spdlog::string_view_t(text.data(), text.size()));
+		}
+		if (g_direction == Direction::File) {
+			logger->flush(); // the live log: every line on disk before the next one
 		}
 	}
 }
@@ -196,6 +231,7 @@ void WriteFatal(std::string_view text) {
 #if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
 	AndroidLog(ANDROID_LOG_ERROR, text);
 	AppendFatalReport(text);
+	WriteFatalToRealtimeFile(text);
 	Flush();
 	return;
 #endif
@@ -213,6 +249,7 @@ void WriteFatal(fmt::text_style style, std::string_view text) {
 	(void)style;
 	AndroidLog(ANDROID_LOG_ERROR, text);
 	AppendFatalReport(text);
+	WriteFatalToRealtimeFile(text);
 	Flush();
 	return;
 #endif
@@ -227,6 +264,12 @@ void WriteFatal(fmt::text_style style, std::string_view text) {
 
 void Initialize() {
 	g_initialized = true;
+	if (g_realtime_file) {
+		// the frontend pointed the log at a live game file before boot; keep it
+		SetupLogger();
+		return;
+	}
+	g_file_truncate = true; // the config-driven log file restarts each boot
 	switch (Config::GetPrintfDirection()) {
 		case Config::LogDirection::Silent: g_direction = Direction::Silent; break;
 		case Config::LogDirection::Console: g_direction = Direction::Console; break;
@@ -241,6 +284,50 @@ void Shutdown() {
 	Flush();
 	std::lock_guard lock(g_logger_mutex);
 	g_logger.reset();
+}
+
+void SetRealtimeFile(std::filesystem::path path) {
+	std::lock_guard lock(g_logger_mutex);
+	if (!g_realtime_file) {
+		g_saved_direction   = g_direction;
+		g_saved_output_file = g_output_file;
+	}
+	g_realtime_file = true;
+	g_direction     = Direction::File;
+	g_output_file   = std::move(path);
+	g_file_truncate = false; // sessions append after the previous ones
+	// a file past the cap starts over, so a chatty game cannot fill the storage
+	std::error_code ec;
+	if (std::filesystem::file_size(g_output_file, ec) > kRealtimeLogMaxBytes) {
+		std::filesystem::remove(g_output_file, ec);
+	}
+	SetupLoggerLocked();
+	if (g_logger) {
+		const std::time_t now = std::time(nullptr);
+		std::tm           tm {};
+#ifdef _WIN32
+		localtime_s(&tm, &now);
+#else
+		localtime_r(&now, &tm);
+#endif
+		char stamp[32]  = {};
+		std::strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &tm);
+		const auto header = fmt::format("\n===== CapyPS5 session {} =====\n", stamp);
+		g_logger->log(spdlog::level::info, spdlog::string_view_t(header.data(), header.size()));
+		g_logger->flush();
+	}
+}
+
+void ClearRealtimeFile() {
+	std::lock_guard lock(g_logger_mutex);
+	if (!g_realtime_file) {
+		return;
+	}
+	g_realtime_file = false;
+	g_direction     = g_saved_direction;
+	g_output_file   = g_saved_output_file;
+	g_file_truncate = true;
+	SetupLoggerLocked();
 }
 
 Direction GetDirection() {

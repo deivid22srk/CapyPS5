@@ -140,6 +140,8 @@
     <!-- Updates -->
     <string name="update_checks">Check for updates</string>
     <string name="update_checks_desc">Looks for a newer release each time the app starts</string>
+    <string name="realtime_log">Real-time log</string>
+    <string name="realtime_log_desc">While a game runs, its log is written live to the logs folder of your main folder, one file per game</string>
     <string name="update_title">New version available</string>
     <string name="update_versions">%1$s is available (you have %2$s)</string>
     <string name="update_download">Download</string>

@@ -205,6 +205,18 @@ class Settings(context: Context) {
         prefs.edit().putBoolean("update_checks", value).apply()
     }
 
+    /**
+     * While a game runs, the core log is written live to the logs folder of the main library
+     * folder (one file per game), so a kill by the system or a crash still leaves the log behind.
+     */
+    var realtimeLog by mutableStateOf(prefs.getBoolean("realtime_log", false))
+        private set
+
+    fun updateRealtimeLog(value: Boolean) {
+        realtimeLog = value
+        prefs.edit().putBoolean("realtime_log", value).apply()
+    }
+
     /** Release the user chose to skip; no notice until a newer one appears. */
     var skippedRelease: String
         get() = prefs.getString("skipped_release", "").orEmpty()

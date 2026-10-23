@@ -181,6 +181,29 @@ JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeSetGpuDriver
 	                           : (g_gpu_driver.driver_dir + "/" + g_gpu_driver.library).c_str());
 }
 
+// Points the core log at a live file (one per game, sessions appended after a separator line);
+// every line is flushed as it is written, so a kill by the low-memory killer or a crash still
+// leaves the whole story behind. An empty path closes it. Call before nativeStartGame.
+JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeSetRealtimeLog(
+    JNIEnv* env, jclass /*clazz*/, jstring path) {
+	if (path == nullptr) {
+		Log::ClearRealtimeFile();
+		return;
+	}
+	const std::string file = [env, path] {
+		const char* c = env->GetStringUTFChars(path, nullptr);
+		std::string result = c != nullptr ? c : "";
+		env->ReleaseStringUTFChars(path, c);
+		return result;
+	}();
+	if (file.empty()) {
+		Log::ClearRealtimeFile();
+	} else {
+		Log::SetRealtimeFile(file);
+		ALOGI("realtime log: %s", file.c_str());
+	}
+}
+
 JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeStopGame(
     JNIEnv* /*env*/, jclass /*clazz*/) {
 	if (!g_is_running.load()) {

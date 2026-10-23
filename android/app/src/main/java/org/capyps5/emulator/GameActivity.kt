@@ -75,6 +75,11 @@ class GameActivity : CapyActivity() {
         CoreOption.entries.forEach { option ->
             NativeBridge.nativeSetOption(option.property, settings.effectiveOption(game.titleId, option, game.isUnreal))
         }
+        // The real-time log option: the core writes its own log to <library>/logs/<game>.log while
+        // the game runs, so a kill by the system or a crash still leaves the story behind.
+        if (settings.realtimeLog) {
+            RealtimeLog.start(settings.libraryPath, game.titleName)
+        }
         val driver = GpuDrivers.find(this, settings.effectiveGpuDriver(game.titleId))
         NativeBridge.nativeSetGpuDriver(
             nativeLibraryDir = applicationInfo.nativeLibraryDir,
@@ -96,6 +101,7 @@ class GameActivity : CapyActivity() {
 
     private fun exitGame() {
         runCatching { NativeBridge.nativeStopGame() }
+        runCatching { RealtimeLog.stop() }
         finish()
         // The launcher activity lives in the main process; ending this one frees everything the
         // emulator held (guest memory, threads, Vulkan device).
