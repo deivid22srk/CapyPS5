@@ -893,6 +893,24 @@ bool GuestGpu::Process(Submission& submission) {
 			g_sync_stream = "compute";
 			complete = cp.Process(submission.command_execution, submission.commands) ==
 			           Pm4ProcessResult::Complete;
+			// Astroneer froze right after its first compute dispatches (loading-screen
+			// video). Surface the difference between an emu-side PM4 wait (this streak
+			// grows) and a host-side GPU wedge (the log simply goes quiet) inside the
+			// real-time file, rate limited so a healthy wait loop cannot flood it.
+			static uint32_t compute_stall_streak = 0;
+			if (complete) {
+				if (compute_stall_streak != 0) {
+					LOGF("compute submission completed after %u incomplete attempts\n",
+					     compute_stall_streak);
+					compute_stall_streak = 0;
+				}
+			} else {
+				compute_stall_streak++;
+				if (compute_stall_streak == 1 || (compute_stall_streak % 120) == 0) {
+					LOGF("compute submission incomplete: streak=%u num_dw=%u first=0x%08x\n",
+					     compute_stall_streak, num_dw, num_dw != 0 ? buffer[0] : 0);
+				}
+			}
 			if (submission.command_execution.MadeProgress() || !complete) {
 				if (complete) {
 					m_renderer.RunGarbageCollector();

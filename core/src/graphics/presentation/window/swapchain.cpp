@@ -27,6 +27,7 @@
 #include <chrono>
 #include <limits>
 #include <memory>
+#include <atomic>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -339,6 +340,11 @@ private:
 	vk::Format       m_format = vk::Format::eUndefined;
 	bool             m_want_srgb = false;
 	bool             m_srgb_unavailable = false; // the surface offers no SRGB format
+	// Pooled video-out frames may alternate SRGB/UNORM backings between flips; only a
+	// mismatch that persists for this many consecutive presents is a real encoding
+	// change (Astroneer recreated the swapchain on almost every flip otherwise).
+	static constexpr uint32_t    kSrgbMismatchStreak = 3;
+	mutable std::atomic<int32_t> m_srgb_mismatch_streak {0};
 	vk::Extent2D     m_extent {};
 	// Drawable pixel size observed when this swapchain was created.
 	vk::Extent2D                   m_window_extent {};
@@ -680,15 +686,29 @@ void Swapchain::Recreate(bool surface_lost) {
 }
 
 bool Swapchain::NeedsResize() const {
+	{
+		Common::LockGuard lock(m_window.mutex);
+		if (m_window_extent.width != m_window.graphic_ctx.screen_width ||
+		    m_window_extent.height != m_window.graphic_ctx.screen_height) {
+			m_srgb_mismatch_streak.store(0, std::memory_order_relaxed);
+			return true; // a real window resize: recreate immediately
+		}
+	}
 	const bool srgb = m_format == vk::Format::eB8G8R8A8Srgb ||
 	                  m_format == vk::Format::eR8G8B8A8Srgb ||
 	                  m_format == vk::Format::eA8B8G8R8SrgbPack32;
-	if (srgb != m_want_srgb && !m_srgb_unavailable) {
-		return true;
+	if (srgb == m_want_srgb || m_srgb_unavailable) {
+		m_srgb_mismatch_streak.store(0, std::memory_order_relaxed);
+		return false;
 	}
-	Common::LockGuard lock(m_window.mutex);
-	return m_window_extent.width != m_window.graphic_ctx.screen_width ||
-	       m_window_extent.height != m_window.graphic_ctx.screen_height;
+	const auto streak = m_srgb_mismatch_streak.fetch_add(1, std::memory_order_relaxed) + 1;
+	if (streak == kSrgbMismatchStreak) {
+		LOGF("Swapchain::NeedsResize: frame encoding switched to %s (swapchain format=%d); "
+		     "recreating after %u presents\n",
+		     m_want_srgb ? "SRGB" : "UNORM", static_cast<int>(m_format),
+		     static_cast<unsigned>(streak));
+	}
+	return streak >= kSrgbMismatchStreak;
 }
 
 Swapchain::Status Swapchain::AcquireNextImage() {
