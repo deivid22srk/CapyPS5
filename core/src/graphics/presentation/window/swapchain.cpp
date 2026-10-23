@@ -23,14 +23,41 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <vector>
+#include <fmt/format.h>
 #include <vulkan/vk_platform.h>
 
 // IWYU pragma: no_include <intrin.h>
 
 namespace Libs::Graphics {
+
+namespace {
+// Android routes LOGF through Log::Write, which stays silent unless debug.capy.verbose is
+// set, so presentation failures used to be invisible in logcat (the swapchain was torn
+// down and recreated on every flip without a single trace). Report to logcat
+// unconditionally, but rate limited so a failing present loop cannot flood logd.
+void PresentLog(const std::string& text)
+{
+	static std::atomic<int64_t> g_last_ms {0};
+	static std::mutex            g_log_mutex;
+	const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+	                       std::chrono::steady_clock::now().time_since_epoch())
+	                       .count();
+	std::lock_guard lock(g_log_mutex);
+	const auto      last = g_last_ms.load(std::memory_order_relaxed);
+	if (now_ms - last < 2000) {
+		return;
+	}
+	g_last_ms.store(now_ms, std::memory_order_relaxed);
+	Log::WriteToConsoleAndLog(text + "\n");
+}
+} // namespace
 
 struct Presenter::Frame {
 	VulkanImage   image;
@@ -298,7 +325,13 @@ public:
 	[[nodiscard]] vk::SwapchainKHR Handle() const noexcept { return m_handle; }
 
 private:
-	void Destroy();
+	// keep_handle detaches everything but the swapchain handle itself, so it can be
+	// handed to vkCreateSwapchainKHR as oldSwapchain. The Android WSI keeps its
+	// BufferQueue alive that way; destroying the swapchain before the replacement
+	// exists disconnects the window and leaves the queue poisoned when a frame was
+	// still acquired.
+	void Destroy(bool keep_handle = false);
+	bool TryCreate(vk::SwapchainKHR old_swapchain);
 	void DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& layer);
 
 	WindowContext&   m_window;
@@ -336,6 +369,9 @@ struct Presenter::Impl {
 	void RecoverSwapchain(Swapchain::Status status) {
 		LOGF("Recovering Vulkan swapchain%s\n",
 		     status == Swapchain::Status::SurfaceLost ? " and surface" : "");
+		PresentLog(status == Swapchain::Status::SurfaceLost
+		                   ? "CapyPS5-Present: recovering Vulkan swapchain and surface"
+		                   : "CapyPS5-Present: recovering Vulkan swapchain");
 		swapchain.Recreate(status == Swapchain::Status::SurfaceLost);
 		if (swapchain.Handle() != nullptr && swapchain.Format() != vk::Format::eUndefined) {
 			if (!frames.IsInitialized()) {
@@ -378,12 +414,13 @@ struct Presenter::Impl {
 	std::atomic<uint64_t> presented_overlay_revision {0};
 };
 
-void Swapchain::Create() {
+bool Swapchain::TryCreate(vk::SwapchainKHR old_swapchain) {
 	auto& graphics = m_window.graphic_ctx;
 	EXIT_IF(graphics.device == nullptr);
 	if (m_window.surface == nullptr) {
 		LOGF("Swapchain::Create: surface is null, deferring swapchain creation\n");
-		return;
+		m_handle = nullptr;
+		return false;
 	}
 
 	// Capture the size before querying surface capabilities. If the window changes
@@ -394,13 +431,15 @@ void Swapchain::Create() {
 	}
 	if (m_window_extent.width == 0 || m_window_extent.height == 0) {
 		LOGF("Swapchain::Create: window extent is 0, deferring\n");
-		return;
+		m_handle = nullptr;
+		return false;
 	}
 	m_window.RefreshSurfaceCapabilities();
 	const auto& surface = m_window.surface_capabilities;
 	if (surface.formats.empty()) {
 		LOGF("Swapchain::Create: surface formats empty, deferring\n");
-		return;
+		m_handle = nullptr;
+		return false;
 	}
 
 	m_extent = surface.capabilities.currentExtent;
@@ -449,7 +488,8 @@ void Swapchain::Create() {
 	}
 	m_format                      = format.format;
 	m_srgb_unavailable            = m_want_srgb && m_format != vk::Format::eB8G8R8A8Srgb &&
-	                                m_format != vk::Format::eR8G8B8A8Srgb;
+	                                m_format != vk::Format::eR8G8B8A8Srgb &&
+	                                m_format != vk::Format::eA8B8G8R8SrgbPack32;
 	const auto swapchain_features = graphics.GetFormatProperties(m_format).optimalTilingFeatures;
 	if (!static_cast<bool>(swapchain_features & vk::FormatFeatureFlagBits::eBlitDst)) {
 		EXIT("swapchain format cannot be a blit destination: format=%d\n",
@@ -485,15 +525,29 @@ void Swapchain::Create() {
 		create_info.presentMode = vk::PresentModeKHR::eFifo;
 	}
 	create_info.clipped = VK_TRUE;
-	RequireVulkanSuccess(graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle),
-	                     "vkCreateSwapchainKHR");
-	EXIT_IF(m_handle == nullptr);
+	create_info.oldSwapchain    = old_swapchain;
+	const auto create_result = graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle);
+	if (create_result != vk::Result::eSuccess) {
+		// A failed recreation must not take the whole emulator down: leave the handle
+		// null and let the present loop defer (it sleeps and retries the recovery).
+		m_handle = nullptr;
+		PresentLog(fmt::format("CapyPS5-Present: vkCreateSwapchainKHR failed: {} "
+		                       "(extent {}x{}, format {}, oldSwapchain {})",
+		                       vk::to_string(create_result), m_extent.width, m_extent.height,
+		                       vk::to_string(m_format), old_swapchain != nullptr ? "yes" : "no"));
+		return false;
+	}
 
 	m_images = EnumerateVulkan<vk::Image>(
 	    "vkGetSwapchainImagesKHR", [&](uint32_t* count, vk::Image* images) {
 		    return graphics.device.getSwapchainImagesKHR(m_handle, count, images);
 	    });
-	EXIT_NOT_IMPLEMENTED(m_images.empty());
+	if (m_images.empty()) {
+		graphics.device.destroySwapchainKHR(m_handle, nullptr);
+		m_handle = nullptr;
+		PresentLog("CapyPS5-Present: vkGetSwapchainImagesKHR returned no images");
+		return false;
+	}
 
 	m_image_views.resize(m_images.size());
 	for (size_t i = 0; i < m_images.size(); i++) {
@@ -527,15 +581,26 @@ void Swapchain::Create() {
 	}
 	m_image_index = static_cast<uint32_t>(-1);
 	m_frame_index = 0;
+	return true;
+}
+
+void Swapchain::Create() {
+	if (!TryCreate(nullptr)) {
+		EXIT("initial Vulkan swapchain creation failed\n");
+	}
 }
 
 Swapchain::~Swapchain() {
 	Destroy();
 }
 
-void Swapchain::Destroy() {
-	if (m_handle == nullptr && m_image_acquired.empty() && m_render_complete.empty() &&
-	    m_image_views.empty()) {
+void Swapchain::Destroy(bool keep_handle) {
+	if (keep_handle) {
+		if (m_handle == nullptr) {
+			return;
+		}
+	} else if (m_handle == nullptr && m_image_acquired.empty() && m_render_complete.empty() &&
+	           m_image_views.empty()) {
 		return;
 	}
 	auto& graphics = m_window.graphic_ctx;
@@ -571,11 +636,11 @@ void Swapchain::Destroy() {
 			graphics.device.destroyImageView(view, nullptr);
 		}
 	}
-	if (m_handle != nullptr) {
+	if (!keep_handle && m_handle != nullptr) {
 		graphics.device.destroySwapchainKHR(m_handle, nullptr);
+		m_handle = nullptr;
 	}
 
-	m_handle        = nullptr;
 	m_format        = vk::Format::eUndefined;
 	m_extent        = {};
 	m_window_extent = {};
@@ -588,7 +653,10 @@ void Swapchain::Destroy() {
 }
 
 void Swapchain::Recreate(bool surface_lost) {
-	Destroy();
+	// Recreating the surface breaks the old swapchain's association with it, so only a
+	// swapchain that stays on the same surface can be passed as oldSwapchain.
+	const auto old_handle = surface_lost ? vk::SwapchainKHR {nullptr} : m_handle;
+	Destroy(old_handle != nullptr);
 	if (surface_lost) {
 #if defined(__APPLE__)
 		// Surface recreation goes through SDL_Vulkan_CreateSurface, which touches the
@@ -601,12 +669,20 @@ void Swapchain::Recreate(bool surface_lost) {
 #endif
 	}
 	if (m_window.surface != nullptr) {
-		Create();
+		(void)TryCreate(old_handle);
+	}
+	if (old_handle != nullptr) {
+		m_window.graphic_ctx.device.destroySwapchainKHR(old_handle, nullptr);
+	}
+	if (m_handle == nullptr && old_handle != nullptr) {
+		PresentLog("CapyPS5-Present: swapchain recreation failed; presentation deferred");
 	}
 }
 
 bool Swapchain::NeedsResize() const {
-	const bool srgb = m_format == vk::Format::eB8G8R8A8Srgb || m_format == vk::Format::eR8G8B8A8Srgb;
+	const bool srgb = m_format == vk::Format::eB8G8R8A8Srgb ||
+	                  m_format == vk::Format::eR8G8B8A8Srgb ||
+	                  m_format == vk::Format::eA8B8G8R8SrgbPack32;
 	if (srgb != m_want_srgb && !m_srgb_unavailable) {
 		return true;
 	}
@@ -627,16 +703,17 @@ Swapchain::Status Swapchain::AcquireNextImage() {
 		case vk::Result::eSuccess:
 		case vk::Result::eSuboptimalKHR: break;
 		case vk::Result::eErrorOutOfDateKHR:
-			LOGF("vkAcquireNextImageKHR returned vk::Result::eErrorOutOfDateKHR\n");
+			PresentLog("CapyPS5-Present: vkAcquireNextImageKHR returned eErrorOutOfDateKHR");
 			return Status::Recreate;
 		case vk::Result::eErrorUnknown:
-			LOGF("vkAcquireNextImageKHR returned vk::Result::eErrorUnknown\n");
+			PresentLog("CapyPS5-Present: vkAcquireNextImageKHR returned eErrorUnknown");
 			return Status::Recreate;
 		case vk::Result::eErrorSurfaceLostKHR:
-			LOGF("vkAcquireNextImageKHR returned vk::Result::eErrorSurfaceLostKHR\n");
+			PresentLog("CapyPS5-Present: vkAcquireNextImageKHR returned eErrorSurfaceLostKHR");
 			return Status::SurfaceLost;
 		default:
-			LOGF("vkAcquireNextImageKHR failed: %s\n", vk::to_string(result).c_str());
+			PresentLog(fmt::format("CapyPS5-Present: vkAcquireNextImageKHR failed: {}",
+			                       vk::to_string(result)));
 			return Status::SurfaceLost;
 	}
 	if (m_image_index >= m_images.size()) {
@@ -917,13 +994,14 @@ Swapchain::Status Swapchain::Present() {
 		case vk::Result::eSuccess:
 		case vk::Result::eSuboptimalKHR: break;
 		case vk::Result::eErrorOutOfDateKHR:
-			LOGF("vkQueuePresentKHR returned vk::Result::eErrorOutOfDateKHR\n");
+			PresentLog("CapyPS5-Present: vkQueuePresentKHR returned eErrorOutOfDateKHR");
 			return Status::Recreate;
 		case vk::Result::eErrorSurfaceLostKHR:
-			LOGF("vkQueuePresentKHR returned vk::Result::eErrorSurfaceLostKHR\n");
+			PresentLog("CapyPS5-Present: vkQueuePresentKHR returned eErrorSurfaceLostKHR");
 			return Status::SurfaceLost;
 		default:
-			LOGF("vkQueuePresentKHR failed: %s\n", vk::to_string(result).c_str());
+			PresentLog(fmt::format("CapyPS5-Present: vkQueuePresentKHR failed: {}",
+			                       vk::to_string(result)));
 			return Status::SurfaceLost;
 	}
 	m_frame_index = (m_frame_index + 1u) % static_cast<uint32_t>(m_images.size());
@@ -1033,6 +1111,7 @@ void Presenter::ClearLayer(int bus) {
 
 void Presenter::Impl::Present() {
 	KYTY_PROFILER_FUNCTION();
+	static std::atomic<uint32_t> g_failed_presents {0};
 
 	const auto overlay_visual = GetSystemOverlayVisualState();
 	if (Common::DebugFlags::Enabled(Common::DebugFlags::IdleBeforePresent)) {
@@ -1041,7 +1120,11 @@ void Presenter::Impl::Present() {
 	}
 	if (layers[0].frame != nullptr) {
 		const auto format = layers[0].frame->image.format;
-		swapchain.SetWantSrgb(format == vk::Format::eB8G8R8A8Srgb || format == vk::Format::eR8G8B8A8Srgb);
+		// PS5 video-out buffers arrive as A8B8G8R8_SRGB_PACK32; treating them as SRGB keeps
+		// the final blit from converting colors (the swapchain follows the frame's encoding).
+		swapchain.SetWantSrgb(format == vk::Format::eB8G8R8A8Srgb ||
+		                      format == vk::Format::eR8G8B8A8Srgb ||
+		                      format == vk::Format::eA8B8G8R8SrgbPack32);
 	}
 	// Some window systems keep presenting an old swapchain after a resize.
 	if (swapchain.Handle() != nullptr && swapchain.NeedsResize()) {
@@ -1082,9 +1165,19 @@ void Presenter::Impl::Present() {
 
 		presented_overlay_revision.store(overlay_visual.revision, std::memory_order_release);
 		window.loop.presented_frames.fetch_add(1, std::memory_order_relaxed);
+		g_failed_presents.store(0, std::memory_order_relaxed);
 		return;
 	}
-	LOGF("Vulkan presentation retry exhausted; dropping frame\n");
+	// Presentation keeps failing (driver or window trouble). Stay alive: back off so the
+	// recovery loop cannot burn a whole CPU, and report the streak to logcat.
+	const auto failures = g_failed_presents.fetch_add(1, std::memory_order_relaxed) + 1;
+	if (failures == 2 || (failures % 120) == 0) {
+		PresentLog(fmt::format("CapyPS5-Present: presentation keeps failing, {} frames dropped; "
+		                       "recovery throttled",
+		                       failures));
+	}
+	std::this_thread::sleep_for(failures > 30 ? std::chrono::milliseconds(50)
+	                                          : std::chrono::milliseconds(16));
 }
 
 void Presenter::Discard(Frame& frame) {
