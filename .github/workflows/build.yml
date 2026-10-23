@@ -41,6 +41,10 @@ jobs:
   apk:
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    # The tag release step needs content write to create the GitHub Release
+    # and upload the signed APK (GITHUB_TOKEN defaults to read-only here).
+    permissions:
+      contents: write
     steps:
       - name: Free disk space (the native build produces ~10 GB of objects)
         run: |
